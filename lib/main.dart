@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:flutter/foundation.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:tflite_flutter_helper/tflite_flutter_helper.dart';
+import 'package:image/image.dart' as img;
 import 'dart:io';
 
 class MyCardsPage extends StatelessWidget {
@@ -15,11 +17,15 @@ class MyCardsPage extends StatelessWidget {
 }
 
 class SearchPage extends StatelessWidget {
+  final String recognizedText;
+
+  SearchPage({required this.recognizedText});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('SEARCH')),
-      body: Center(child: Text('카드 검색 기능')),
+      body: Center(child: Text('인식된 텍스트: $recognizedText')),
     );
   }
 }
@@ -48,11 +54,22 @@ class _CameraScreenState extends State<CameraScreen> {
   late CameraController _controller;
   bool _isInitialized = false;
   final textRecognizer = TextRecognizer();
+  late Interpreter interpreter;
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
+    _loadModel();
+  }
+
+  void _loadModel() async {
+    try {
+      interpreter = await Interpreter.fromAsset('card_detector.tflite');
+      print('✅ TFLite 모델 로드 완료');
+    } catch (e) {
+      print('❌ 모델 로드 에러: $e');
+    }
   }
 
   void _initializeCamera() async {
@@ -76,16 +93,38 @@ class _CameraScreenState extends State<CameraScreen> {
       final recognizedText = await textRecognizer.processImage(inputImage);
       final text = recognizedText.text;
 
+      // 이미지 로드 및 변환 (딥러닝 추론용)
+      final bytes = await File(file.path).readAsBytes();
+      img.Image? image = img.decodeImage(bytes);
+
+      if (image != null) {
+        // 이미지 리사이즈 (모델 입력 크기에 맞게)
+        final resizedImage = img.copyResize(image, width: 224, height: 224);
+
+        // 이미지 → 텐서 변환
+        TensorImage tensorImage = TensorImage.fromImage(resizedImage);
+        var input = [tensorImage.buffer];
+        var output = List.filled(4, 0.0).reshape([1, 4]); // 카드 영역 좌표 예시
+
+        // 딥러닝 추론
+        interpreter.run(input, output);
+        print('🟩 카드 영역 예측 결과: $output');
+
+        // TODO: output 기반으로 이미지 크롭 및 저장
+      }
+
       if (text.isNotEmpty) {
         print('🔍 인식된 텍스트: $text');
 
-        if (text.contains('Pikachu')) {
-          print('🎯 카드 인식됨: Pikachu!');
-          // TODO: 결과 화면 이동
-        }
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SearchPage(recognizedText: text),
+          ),
+        );
       }
     } catch (e) {
-      print('❌ OCR 에러: $e');
+      print('❌ OCR/모델 에러: $e');
     }
   }
 
@@ -93,6 +132,7 @@ class _CameraScreenState extends State<CameraScreen> {
   void dispose() {
     _controller.dispose();
     textRecognizer.close();
+    interpreter.close();
     super.dispose();
   }
 
@@ -138,23 +178,43 @@ class _CameraScreenState extends State<CameraScreen> {
                       onPressed: () {
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (context) => SearchPage()),
+                          MaterialPageRoute(
+                            builder:
+                                (context) => SearchPage(recognizedText: ""),
+                          ),
                         );
                       },
                       child: Icon(Icons.search),
                       tooltip: 'SEARCH',
                     ),
                   ),
+                  Positioned(
+                    bottom: 16,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: _captureAndRecognizeText,
+                        child: Container(
+                          width: 108,
+                          height: 108,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white,
+                            border: Border.all(color: Colors.black, width: 4),
+                          ),
+                          child: Icon(
+                            Icons.camera_alt,
+                            color: Colors.black,
+                            size: 36,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               )
               : Center(child: CircularProgressIndicator()),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-      floatingActionButton: FloatingActionButton(
-        heroTag: "capture",
-        onPressed: _captureAndRecognizeText,
-        child: Icon(Icons.camera_alt),
-        tooltip: '촬영 후 OCR',
-      ),
     );
   }
 }
